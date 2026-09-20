@@ -1,0 +1,11 @@
+# PaddleOCR 3.x (PP-OCRv5/v6) is the quality choice -- multilingual
+# species names, Chinese titles, small fonts. It CRASHES on some CPUs via
+# the onednn/PIR path; the recognizer passes enable_mkldnn=False.
+paddleocr>=3.7
+paddlepaddle>=3.3
+fastapi
+uvicorn
+python-multipart
+cairosvg
+numpy
+pillow

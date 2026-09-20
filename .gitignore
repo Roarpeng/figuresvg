@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+engine/target/
+engine/.gitignore
+*.egg-info/
+.env
+_repainted.png
