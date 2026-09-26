@@ -97,11 +97,32 @@ def text_color(img: np.ndarray, x0, y0, x1, y1) -> str:
     return "#{:02x}{:02x}{:02x}".format(*[int(v) for v in c])
 
 
+def _is_plausible_text(bbox, text, W, H):
+    """Reject OCR hallucinations: a lone glyph covering half the canvas is
+    a misread shape (stem read as 'd', tail read as a CJK char), not text.
+    Real figure text is small relative to the canvas and multi-glyph or
+    plausibly placed."""
+    x, y, w, h = bbox
+    # giant single char = hallucination
+    if h > H * 0.35 or w > W * 0.5:
+        return False
+    # single char with extreme aspect
+    if len(text or "") <= 2 and (w / max(1, h) > 4 or h / max(1, w) > 4):
+        return False
+    # tiny fragment
+    if w < 8 and h < 8:
+        return False
+    return True
+
+
 def recognize(path: str) -> list:
     """Return Element list (type=text) for the image at `path`."""
     img = np.asarray(Image.open(path).convert("RGB"))
+    H, W = img.shape[:2]
     _engine()  # set _API before dispatch
     items = _items_3(path) if _API == "3" else _items_2(path)
+    # filter hallucinations before further processing
+    items = [it for it in items if _is_plausible_text(it[:4], it[4], W, H)]
     out = []
     for n, item in enumerate(items, 1):
         x0, y0, x1, y1, txt, score, rot, h_poly = item

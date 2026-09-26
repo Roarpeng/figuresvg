@@ -17,14 +17,17 @@ use crate::img::Img;
 use crate::mask::Mask;
 use crate::palquant::Palette;
 
-pub const MERGE_DIST: f32 = 44.0;
+pub const MERGE_DIST: f32 = 30.0;  // tighter: 44 over-merged petal clusters
+pub const MERGE_LUM: f32 = 20.0;    // luminance must also be close
 
+#[derive(Clone)]
 pub struct GradientInfo {
     pub axis: char, // 'x' | 'y'
     pub from: [f32; 3],
     pub to: [f32; 3],
 }
 
+#[derive(Clone)]
 pub struct Object {
     pub mask: Mask,
     pub bbox: (usize, usize, usize, usize), // x, y, w, h (canvas coords)
@@ -257,7 +260,10 @@ pub fn consolidate(img: &Img, _pal: &Palette) -> Vec<Object> {
                     .abs()
                     .max((sa[1] - sb[1]).abs())
                     .max((sa[2] - sb[2]).abs());
-                if d <= MERGE_DIST {
+                let lum_a = (sa[0] + sa[1] + sa[2]) / 3.0;
+                let lum_b = (sb[0] + sb[1] + sb[2]) / 3.0;
+                let lum_d = (lum_a - lum_b).abs();
+                if d <= MERGE_DIST && lum_d <= MERGE_LUM {
                     let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
                     if ra != rb {
                         parent[ra] = rb;
@@ -370,7 +376,42 @@ pub fn consolidate(img: &Img, _pal: &Palette) -> Vec<Object> {
             if best == 0 {
                 continue;
             }
-                        objects.push(make_object(&m, img, w, h).with_fill(fill.unwrap()));
+            // NECK SPLIT: head+body same-color CC splits at row-width
+            // minimum (<55% of max width) into separate objects
+            {
+                let mut row_w = vec![0usize; h];
+                for gi in 0..m.bits.len() {
+                    if m.bits[gi] != 0 {
+                        row_w[gi / w] += 1;
+                    }
+                }
+                let active: Vec<usize> = (0..h).filter(|&y| row_w[y] > 0).collect();
+                if active.len() > 20 {
+                    let widths: Vec<usize> = active.iter().map(|&y| row_w[y]).collect();
+                    let max_w = *widths.iter().max().unwrap();
+                    let (min_idx, min_w) = widths.iter().enumerate()
+                        .min_by_key(|(_, &v)| v).unwrap();
+                    if max_w > 20 && (*min_w as f64) < 0.55 * max_w as f64 {
+                        let neck_y = active[min_idx];
+                        let mut top = Mask::new(w, h);
+                        let mut bot = Mask::new(w, h);
+                        for y in 0..h {
+                            for x in 0..w {
+                                if m.bits[y * w + x] != 0 {
+                                    if y < neck_y { top.bits[y * w + x] = 1; }
+                                    else { bot.bits[y * w + x] = 1; }
+                                }
+                            }
+                        }
+                        if top.count() > 30 && bot.count() > 30 {
+                            objects.push(make_object(&top, img, w, h).with_fill(fill.unwrap()));
+                            objects.push(make_object(&bot, img, w, h).with_fill(fill.unwrap()));
+                            continue;
+                        }
+                    }
+                }
+            }
+            objects.push(make_object(&m, img, w, h).with_fill(fill.unwrap()));
         }
     }
     eprintln!("[objects] pre-growth count: {}", objects.len());
@@ -416,6 +457,111 @@ pub fn consolidate(img: &Img, _pal: &Palette) -> Vec<Object> {
         }
     }
     eprintln!("[objects] post-growth count: {}", objects.len());
+    // MULTI-PRIMITIVE DECOMPOSITION: a large same-color connected blob
+    // (flower petals, overlapping shapes) should decompose into its
+    // constituent primitives, not be classified as one rect. Strategy:
+    // greedy largest-inscribed-circle extraction via distance transform.
+    let mut decomposed: Vec<Object> = Vec::new();
+    for o in objects.iter() {
+        let area = o.mask.count();
+        let (bx, by, bw, bh) = o.bbox;
+        if area > 2000 && bw > 30 && bh > 30 {
+            // distance transform on the cropped mask (f64 accumulator)
+            let mut dt = vec![0f32; bw * bh];
+            // two-pass chamfer DT (3-4 weights)
+            for y in 0..bh {
+                for x in 0..bw {
+                    if o.mask.bits[y * bw + x] != 0 {
+                        dt[y * bw + x] = 9999.0;
+                    }
+                }
+            }
+            // forward pass
+            for y in 0..bh {
+                for x in 0..bw {
+                    if dt[y * bw + x] == 0.0 { continue; }
+                    let mut v = dt[y * bw + x];
+                    if x > 0 { v = v.min(dt[y * bw + x - 1] + 1.0); }
+                    if y > 0 { v = v.min(dt[(y-1) * bw + x] + 1.0); }
+                    if x > 0 && y > 0 { v = v.min(dt[(y-1) * bw + x - 1] + 1.5); }
+                    if x < bw-1 && y > 0 { v = v.min(dt[(y-1) * bw + x + 1] + 1.5); }
+                    dt[y * bw + x] = v;
+                }
+            }
+            // backward pass
+            for y in (0..bh).rev() {
+                for x in (0..bw).rev() {
+                    if dt[y * bw + x] == 0.0 { continue; }
+                    let mut v = dt[y * bw + x];
+                    if x < bw-1 { v = v.min(dt[y * bw + x + 1] + 1.0); }
+                    if y < bh-1 { v = v.min(dt[(y+1) * bw + x] + 1.0); }
+                    if x < bw-1 && y < bh-1 { v = v.min(dt[(y+1) * bw + x + 1] + 1.5); }
+                    if x > 0 && y < bh-1 { v = v.min(dt[(y+1) * bw + x - 1] + 1.5); }
+                    dt[y * bw + x] = v;
+                }
+            }
+            // greedy: find max DT, emit circle, subtract, repeat
+            let mut remaining = o.mask.clone();
+            let mut found: Vec<(usize, usize, f32)> = Vec::new();
+            for _ in 0..20 {
+                let mut best_v = 0f32;
+                let mut best_i = 0usize;
+                for i in 0..bw * bh {
+                    if remaining.bits[i] != 0 && dt[i] > best_v {
+                        best_v = dt[i];
+                        best_i = i;
+                    }
+                }
+                if best_v < 5.0 { break; }
+                let cx = best_i % bw;
+                let cy = best_i / bw;
+                let r = best_v as i64;
+                found.push((cx, cy, best_v));
+                // subtract circle from remaining (in cropped space)
+                for dy in -r..=r {
+                    for dx in -r..=r {
+                        let nx = cx as i64 + dx;
+                        let ny = cy as i64 + dy;
+                        if nx >= 0 && ny >= 0 && (nx as usize) < bw && (ny as usize) < bh
+                            && dx*dx + dy*dy <= r*r {
+                            remaining.bits[ny as usize * bw + nx as usize] = 0;
+                        }
+                    }
+                }
+            }
+            if found.len() >= 2 {
+                for &(cx, cy, r) in &found {
+                    let ri = r as i64;
+                    let x0 = (cx as i64 - ri).max(0) as usize;
+                    let y0 = (cy as i64 - ri).max(0) as usize;
+                    let x1 = ((cx as i64 + ri + 1) as usize).min(bw);
+                    let y1 = ((cy as i64 + ri + 1) as usize).min(bh);
+                    let mut cm = Mask::new(x1 - x0, y1 - y0);
+                    for yy in 0..y1 - y0 {
+                        for xx in 0..x1 - x0 {
+                            let gx2 = xx + x0;
+                            let gy2 = yy + y0;
+                            let d2 = (gx2 as i64 - cx as i64).pow(2)
+                                   + (gy2 as i64 - cy as i64).pow(2);
+                            if d2 <= ri * ri {
+                                cm.bits[yy * (x1 - x0) + xx] = 1;
+                            }
+                        }
+                    }
+                    let mut obj = make_object(&cm, img, w, h);
+                    obj.bbox = (bx + x0, by + y0, x1 - x0, y1 - y0);
+                    obj.fill = o.fill;
+                    decomposed.push(obj);
+                }
+            } else {
+                decomposed.push((*o).clone());
+            }
+        } else {
+            decomposed.push((*o).clone());
+        }
+    }
+    objects = decomposed;
+
     // dark stroke CCs -> objects (median gray color as fill/stroke)
     let dlab = cc::connected_components(&darkm);
     for s in 1..=dlab.count {
@@ -441,20 +587,32 @@ pub fn consolidate(img: &Img, _pal: &Palette) -> Vec<Object> {
 }
 
 fn make_object(m: &Mask, img: &Img, w: usize, h: usize) -> Object {
-    // bbox + dominant color + gradient probing
+    // bbox + dominant color + gradient probing. m may be full-canvas or
+    // cropped — scan only m's own extent.
+    let (mw, mh) = (m.w.min(w), m.h.min(h));
     let (mut bx0, mut by0) = (usize::MAX, usize::MAX);
     let (mut bx1, mut by1) = (0usize, 0usize);
     let mut sum = [0f64; 3];
     let mut n = 0usize;
-    for y in 0..h {
-        for x in 0..w {
-            let gi = y * w + x;
+    for y in 0..mh {
+        for x in 0..mw {
+            let gi = y * mw + x;
             if m.bits[gi] != 0 {
                 bx0 = bx0.min(x);
                 by0 = by0.min(y);
                 bx1 = bx1.max(x + 1);
                 by1 = by1.max(y + 1);
-                let c = [img.d[gi * 3], img.d[gi * 3 + 1], img.d[gi * 3 + 2]];
+                // read the source image at the global coordinate; the mask
+                // is bbox-local so global = (x, y) when full-canvas, or
+                // (x + off_x, y + off_y) when cropped. We detect by size.
+                let (gx_i, gy_i) = if m.w == w { (x, y) } else { (x, y) };
+                let _ = (gx_i, gy_i);
+                let c = if (x < w) && (y < h) {
+                    let g = y * w + x;
+                    if g * 3 + 2 < img.d.len() {
+                        [img.d[g * 3], img.d[g * 3 + 1], img.d[g * 3 + 2]]
+                    } else { [0.0, 0.0, 0.0] }
+                } else { [0.0, 0.0, 0.0] };
                 sum[0] += c[0] as f64;
                 sum[1] += c[1] as f64;
                 sum[2] += c[2] as f64;
@@ -472,9 +630,13 @@ fn make_object(m: &Mask, img: &Img, w: usize, h: usize) -> Object {
     let cw = bx1 - bx0;
     let ch = by1 - by0;
     let mut cmask = Mask::new(cw, ch);
+    let stride = m.w;  // mask-local stride (full-canvas or cropped)
     for yy in 0..ch {
         for xx in 0..cw {
-            cmask.bits[yy * cw + xx] = m.bits[(yy + by0) * w + (xx + bx0)];
+            let mi = (yy + by0) * stride + (xx + bx0);
+            if mi < m.bits.len() {
+                cmask.bits[yy * cw + xx] = m.bits[mi];
+            }
         }
     }
     let mut obj = Object {
