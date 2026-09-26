@@ -99,13 +99,26 @@ def _draw_component(comp: dict) -> str:
 
     if shape == "rect":
         cx, cy = pos
-        w, h = size if isinstance(size, list) else (size, size)
+        if isinstance(size, list) and len(size) == 2:
+            w, h = size
+        elif isinstance(size, list) and len(size) == 4:
+            x1, y1, x2, y2 = size
+            w, h = x2 - x1, y2 - y1
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        else:
+            w = h = size if isinstance(size, (int, float)) else 10
         x, y = cx - w / 2, cy - h / 2
         tr = f' transform="rotate({rot} {cx} {cy})"' if rot else ""
         return f'<rect id="{cid}" x="{x}" y="{y}" width="{w}" height="{h}" fill="{fill}"{tr}/>'
 
     if shape == "line":
-        x1, y1, x2, y2 = size if isinstance(size, list) else (0, 0, 10, 10)
+        if isinstance(size, list) and len(size) == 4:
+            x1, y1, x2, y2 = size
+        elif isinstance(size, list) and len(size) == 2:
+            w, h = size
+            x1, y1, x2, y2 = pos[0], pos[1], pos[0] + w, pos[1] + h
+        else:
+            x1, y1, x2, y2 = 0, 0, 10, 10
         return f'<line id="{cid}" x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{fill}" stroke-width="3"/>'
 
     if shape == "text":

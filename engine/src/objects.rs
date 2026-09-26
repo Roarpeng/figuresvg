@@ -64,7 +64,11 @@ pub fn consolidate(img: &Img, _pal: &Palette) -> Vec<Object> {
         );
         let spread = mx - mn;
         let dark = spread < 25.0 && (c[0] + c[1] + c[2]) / 3.0 < 150.0;
-        let is_content = !dark && ((spread > 15.0) || (mx < 252.0 && spread >= 8.0));
+        // ALL non-white pixels are potential object content: gray fills
+        // (#333 body, #C0C0C0 sword blade) are just as much objects as
+        // colored fills. The old rule (spread>=8) dropped flat grays into
+        // a dead zone between dark-stroke and colored-content.
+        let is_content = mx < 250.0 || spread > 15.0;
         content.bits[i] = is_content as u8;
     }
     // BLACK STROKE objects (error bars, axes, ticks, outlines): dark CCs
@@ -562,12 +566,19 @@ pub fn consolidate(img: &Img, _pal: &Palette) -> Vec<Object> {
     }
     objects = decomposed;
 
-    // dark stroke CCs -> objects (median gray color as fill/stroke)
+    // dark stroke CCs -> objects. Only THIN components (stroke-like:
+    // text, error bars, axis ticks) take the traced-path path; LARGE dark
+    // regions (a #333 pet body) should decompose into circles/rects like
+    // any other object. The thin threshold: max(w,h) < 25 or area < 400.
     let dlab = cc::connected_components(&darkm);
     for s in 1..=dlab.count {
         let st = &dlab.stats[s];
         if st.area < 12 {
             continue;
+        }
+        // large dark regions: add to content objects for decomposition
+        if st.area > 400 && st.w.max(st.h) > 25 {
+            continue; // already handled by content path above
         }
         let (x0, y0) = (st.x.max(0) as usize, st.y.max(0) as usize);
         let (x1, y1) = ((st.x + st.w) as usize, (st.y + st.h) as usize);

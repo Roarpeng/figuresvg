@@ -67,7 +67,25 @@ pub fn classify_cc(
             area,
         );
     }
-    if circ >= 0.82 && (w - h).abs() <= 0.25 * w.max(h) {
+    let aspect = w.max(h) / w.min(h).max(1.0);
+
+    // ellipse: round-ish but elongated (aspect >= 1.3:1). Flower petals,
+    // anime eyes, pet bodies are ellipses, not circles.
+    if circ >= 0.55 && aspect >= 1.3 {
+        let (cx, cy) = (
+            gx + crop.w as i64 / 2,
+            gy + crop.h as i64 / 2,
+        );
+        el.insert("type".into(), json!("ellipse"));
+        el.insert("cx".into(), json!(cx));
+        el.insert("cy".into(), json!(cy));
+        el.insert("rx".into(), json!((crop.w as f64 / 2.0).round() as i64));
+        el.insert("ry".into(), json!((crop.h as f64 / 2.0).round() as i64));
+        return Value::Object(el);
+    }
+
+    // circle: high circularity and near-square bbox
+    if circ >= 0.75 && aspect < 1.3 {
         let (cx, cy) = (
             gx + crop.w as i64 / 2,
             gy + crop.h as i64 / 2,
