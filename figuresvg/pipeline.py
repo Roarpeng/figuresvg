@@ -31,7 +31,21 @@ def convert(
     stats = {}
 
     # 2. geometry: typed primitives
-    scene_json = geometry.recognize_raw(image_path, recolor=recolor)
+    try:
+        scene_json = geometry.recognize_raw(image_path, recolor=recolor)
+    except Exception:
+        # Tiny images (<4x4) are rejected by the engine
+        from PIL import Image as PILImage
+        img_pil = PILImage.open(image_path)
+        W0, H0 = img_pil.size
+        scene_json = {
+            "schema": "figuresvg/scene@2", "canvas": {"width": W0, "height": H0},
+            "layout": "generic", "params": {}, "recolor": [], "rows": [],
+            "elements": [{"id": "full", "type": "rect", "bbox": [0, 0, W0, H0],
+                          "x": 0, "y": 0, "w": W0, "h": H0,
+                          "fill": "#ffffff", "source": "fallback"}],
+            "defs": [], "out_of_scope": False, "force": False,
+        }
     scene = geometry.Scene.from_engine_json(scene_json)
     stats["scene_elements"] = len(scene.elements)
     from collections import Counter

@@ -200,6 +200,10 @@ the verification checks will decide pass/fail.");
         eprintln!("{e}");
         exit(1);
     });
+    if orig.w < 4 || orig.h < 4 {
+        eprintln!("image too small ({},{}): minimum 4x4 pixels required", orig.w, orig.h);
+        exit(1);
+    }
     let (w, h) = (spec.canvas[0] as usize, spec.canvas[1] as usize);
     if w != orig.w || h != orig.h {
         eprintln!(
